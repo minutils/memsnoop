@@ -1,0 +1,6 @@
+project(memsnoop)
+cmake_minimum_required(VERSION 2.8)
+aux_source_directory(. SRC_LIST)
+add_library(memsnoop SHARED memsnoop.c)
+TARGET_LINK_LIBRARIES(memsnoop dl)
+set (CMAKE_C_FLAGS "--std=c99 ${CMAKE_C_FLAGS}")
