@@ -45,7 +45,7 @@ static allocation allocations[MAX_ALLOCS];
 static unsigned long total_size = 0;
 static unsigned long total_allocs = 0;
 
-static int print = 0;
+static int print = 1;
 static int initialized = 0;
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -146,7 +146,7 @@ void initialize() {
     real_valloc         = temp_valloc;
     real_posix_memalign = temp_posix_memalign;
 
-    if(getenv("MEMSNOOP_PRINT")) print = 1;
+    if(getenv("MEMSNOOP_QUIET")) print = 0;
 }
 
 void* malloc(size_t size) {
