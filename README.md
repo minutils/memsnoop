@@ -1,6 +1,6 @@
 # memsnoop
 
-A LD_PRELOADable library for snooping on malloc and friends.
+LD_PRELOADable library for snooping on malloc and friends.
 
 ```
 cmake .
