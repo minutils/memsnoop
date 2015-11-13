@@ -1,0 +1,5 @@
+language: c
+
+before_script: cmake .
+
+script: make
