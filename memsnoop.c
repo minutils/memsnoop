@@ -45,7 +45,10 @@ static allocation allocations[MAX_ALLOCS];
 static unsigned long total_size = 0;
 static unsigned long total_allocs = 0;
 
-static int print = 1;
+static int config_print = 1;
+static int config_abort = 1;
+static int config_track = 1;
+
 static int initialized = 0;
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -76,19 +79,24 @@ void* early_calloc(size_t nmemb, size_t size) {
 void early_free(void *ptr) {
 }
 
-void die(char* format, ...) {
+void error(char* format, ...) {
     va_list(args);
     va_start(args, format);
     vfprintf(stderr, format, args);
     fprintf(stderr, "\n");
-    abort();
+    if(config_abort) abort();
 }
 
 void save_allocation(void* ptr, size_t size) {
+    if(!config_track) return;
     int i;
     for(i=0; i<MAX_ALLOCS; i++) if(!allocations[i].ptr) break;
 
-    if(i == MAX_ALLOCS) die("too many allocs!\n");
+    if(i == MAX_ALLOCS)
+    {
+        error("too many allocs");
+        return;
+    }
 
     allocations[i].ptr = ptr;
     allocations[i].size = size;
@@ -98,10 +106,15 @@ void save_allocation(void* ptr, size_t size) {
 }
 
 void clear_allocation(void* ptr) {
+    if(!config_track) return;
     int i;
     for(i=0; i<MAX_ALLOCS; i++) if(allocations[i].ptr == ptr) break;
 
-    if(i == MAX_ALLOCS) die("bad free %p", ptr);
+    if(i == MAX_ALLOCS)
+    {
+        error("bad free %p", ptr);
+        return;
+    }
 
     total_size -= allocations[i].size;
     total_allocs--;
@@ -115,6 +128,10 @@ void clear_allocations() {
 
 void initialize() {
     initialized = 1;
+
+    if(getenv("MEMSNOOP_NO_PRINT")) config_print = 0;
+    if(getenv("MEMSNOOP_NO_TRACK")) config_track = 0;
+    if(getenv("MEMSNOOP_NO_ABORT")) config_abort = 0;
 
     real_malloc         = early_malloc;
     real_calloc         = early_calloc;
@@ -135,7 +152,8 @@ void initialize() {
     if (!temp_malloc || !temp_calloc || !temp_realloc || !temp_memalign ||
         !temp_valloc || !temp_posix_memalign || !temp_free)
     {
-        die("Error in `dlsym`: %s", dlerror());
+        fprintf(stderr, "Error in `dlsym`: %s", dlerror());
+        abort();
     }
 
     real_malloc         = temp_malloc;
@@ -145,8 +163,6 @@ void initialize() {
     real_memalign       = temp_memalign;
     real_valloc         = temp_valloc;
     real_posix_memalign = temp_posix_memalign;
-
-    if(getenv("MEMSNOOP_QUIET")) print = 0;
 }
 
 void* malloc(size_t size) {
@@ -158,7 +174,7 @@ void* malloc(size_t size) {
 
     save_allocation(result, size);
 
-    if(print) fprintf(stderr, "malloc(%zu) = %p [%lu/%lu]\n", size, result, total_size, total_allocs);
+    if(config_print) fprintf(stderr, "malloc(%zu) = %p [%lu/%lu]\n", size, result, total_size, total_allocs);
 
     unlock();
 
@@ -176,7 +192,7 @@ void free(void *ptr) {
 
     clear_allocation(ptr);
 
-    if(print) fprintf(stderr, "free(%p) [%lu/%lu]\n", ptr, total_size, total_allocs);
+    if(config_print) fprintf(stderr, "free(%p) [%lu/%lu]\n", ptr, total_size, total_allocs);
 
     unlock();
 }
@@ -192,7 +208,7 @@ void* calloc(size_t nmemb, size_t size) {
 
     save_allocation(result, total_size);
 
-    if(print) fprintf(stderr, "calloc(%zu) = %p [%lu/%lu]\n", nmemb*size, result, total_size, total_allocs);
+    if(config_print) fprintf(stderr, "calloc(%zu) = %p [%lu/%lu]\n", nmemb*size, result, total_size, total_allocs);
 
     unlock();
 
@@ -209,12 +225,12 @@ void* realloc(void *ptr, size_t size) {
     if(ptr) {
         clear_allocation(ptr);
 
-        if(print) fprintf(stderr, "realloc_free(%p) [%lu/%lu]\n", ptr, total_size, total_allocs);
+        if(config_print) fprintf(stderr, "realloc_free(%p) [%lu/%lu]\n", ptr, total_size, total_allocs);
     }
 
     save_allocation(result, size);
 
-    if(print) fprintf(stderr, "realloc_malloc(%p, %zu) = %p [%lu/%lu]\n", ptr, size, result, total_size, total_allocs);
+    if(config_print) fprintf(stderr, "realloc_malloc(%p, %zu) = %p [%lu/%lu]\n", ptr, size, result, total_size, total_allocs);
 
     unlock();
 
@@ -230,7 +246,7 @@ void* valloc(size_t size) {
 
     save_allocation(result, size);
 
-    if(print) fprintf(stderr, "valloc(%zu) = %p [%lu/%lu]\n", size, result, total_size, total_allocs);
+    if(config_print) fprintf(stderr, "valloc(%zu) = %p [%lu/%lu]\n", size, result, total_size, total_allocs);
 
     unlock();
 
@@ -246,7 +262,7 @@ void* memalign(size_t blocksize, size_t size) {
 
     save_allocation(result, size);
 
-    if(print) fprintf(stderr, "memalign(%zu) = %p [%lu/%lu]\n", size, result, total_size, total_allocs);
+    if(config_print) fprintf(stderr, "memalign(%zu) = %p [%lu/%lu]\n", size, result, total_size, total_allocs);
 
     unlock();
 
@@ -262,7 +278,7 @@ int posix_memalign(void** memptr, size_t alignment, size_t size) {
 
     save_allocation(*memptr, size);
 
-    if(print) fprintf(stderr, "posix_memalign(%zu) = %p [%lu/%lu]\n", size, *memptr, total_size, total_allocs);
+    if(config_print) fprintf(stderr, "posix_memalign(%zu) = %p [%lu/%lu]\n", size, *memptr, total_size, total_allocs);
 
     unlock();
 
