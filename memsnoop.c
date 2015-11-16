@@ -90,17 +90,28 @@ void error(char* format, ...) {
 
 unsigned hash(void* ptr)
 {
-    //http://web.archive.org/web/20071223173210/http://www.concentric.net/~Ttwang/tech/inthash.htm
+    //http://web.archive.org/web/20050215204412/http://www.concentric.net/~ttwang/tech/inthash.htm
 
     uintptr_t hash = (uintptr_t)ptr;
+
+#if UINTPTR_MAX == UINT64_MAX
     hash += ~(hash << 32);
-    hash ^= (hash >> 22);
+    hash ^=  (hash >> 22);
     hash += ~(hash << 13);
-    hash ^= (hash >> 8);
-    hash += (hash << 3);
-    hash ^= (hash >> 15);
+    hash ^=  (hash >> 8);
+    hash +=  (hash << 3);
+    hash ^=  (hash >> 15);
     hash += ~(hash << 27);
-    hash ^= (hash >> 31);
+    hash ^=  (hash >> 31);
+#else
+    hash += ~(hash << 15);
+    hash ^=  (hash >> 10);
+    hash +=  (hash << 3);
+    hash ^=  (hash >> 6);
+    hash += ~(hash << 11);
+    hash ^=  (hash >> 16);
+#endif
+
     return hash % MAX_ALLOCS;
 }
 
