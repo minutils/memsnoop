@@ -22,9 +22,16 @@ typedef void* (*valloc_t)(size_t size);
 typedef int   (*posix_memalign_t)(void** memptr, size_t alignment, size_t size);
 typedef void  (*free_t)(void *ptr);
 
+typedef enum {
+    EMPTY,
+    DELETED,
+    USED
+} state;
+
 typedef struct allocation {
-    void* ptr;
+    void*  ptr;
     size_t size;
+    state  state;
 } allocation;
 
 static malloc_t         temp_malloc, real_malloc;
@@ -87,19 +94,85 @@ void error(char* format, ...) {
     if(config_abort) abort();
 }
 
+unsigned hash(void* ptr)
+{
+    //http://web.archive.org/web/20071223173210/http://www.concentric.net/~Ttwang/tech/inthash.htm
+
+    uintptr_t hash = (uintptr_t)ptr;
+    hash += ~(hash << 32);
+    hash ^= (hash >> 22);
+    hash += ~(hash << 13);
+    hash ^= (hash >> 8);
+    hash += (hash << 3);
+    hash ^= (hash >> 15);
+    hash += ~(hash << 27);
+    hash ^= (hash >> 31);
+    return hash % MAX_ALLOCS;
+}
+
+int lookup(void* ptr)
+{
+    int i = hash(ptr);
+    int relocate = -1;
+    int location = -1;
+
+    for(int j=0; j<MAX_ALLOCS; j++)
+    {
+        if(allocations[i].ptr == ptr)
+        {
+            location = i;
+            break;
+        }
+
+        if(allocations[i].state == DELETED && relocate == -1)
+            relocate = i;
+        else if(allocations[i].state == EMPTY)
+            return -1;
+
+        i++;
+        i %= MAX_ALLOCS;
+    }
+
+    if(location == -1) return -1;
+
+    if(relocate == -1) return location;
+
+    allocations[relocate] = allocations[location];
+
+    allocations[location].ptr = NULL;
+    allocations[location].state = DELETED;
+
+    return relocate;
+}
+
+int slot(void* ptr)
+{
+    int i = hash(ptr);
+
+    for(int j=0; j<MAX_ALLOCS; j++)
+    {
+        if(allocations[i].state != USED) return i;
+
+        i++;
+        i %= MAX_ALLOCS;
+    }
+
+    return -1;
+}
+
 void save_allocation(void* ptr, size_t size) {
     if(!config_track) return;
-    int i;
-    for(i=0; i<MAX_ALLOCS; i++) if(!allocations[i].ptr) break;
+    int i = slot(ptr);
 
-    if(i == MAX_ALLOCS)
+    if(i == -1)
     {
-        error("too many allocs");
+        error("too many allocs, increase MAX_ALLOCS");
         return;
     }
 
     allocations[i].ptr = ptr;
     allocations[i].size = size;
+    allocations[i].state = USED;
 
     total_size += size;
     total_allocs++;
@@ -107,10 +180,9 @@ void save_allocation(void* ptr, size_t size) {
 
 void clear_allocation(void* ptr) {
     if(!config_track) return;
-    int i;
-    for(i=0; i<MAX_ALLOCS; i++) if(allocations[i].ptr == ptr) break;
+    int i = lookup(ptr);
 
-    if(i == MAX_ALLOCS)
+    if(i == -1)
     {
         error("bad free %p", ptr);
         return;
@@ -120,10 +192,16 @@ void clear_allocation(void* ptr) {
     total_allocs--;
 
     allocations[i].ptr = NULL;
+    allocations[i].state = DELETED;
 }
 
 void clear_allocations() {
-    for(int i=0; i<MAX_ALLOCS; i++) allocations[i].ptr = NULL;
+    for(int i=0; i<MAX_ALLOCS; i++)
+    {
+        allocations[i].ptr = NULL;
+        allocations[i].size = 0;
+        allocations[i].state = EMPTY;
+    }
 }
 
 void initialize() {
