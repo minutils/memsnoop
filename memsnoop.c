@@ -22,16 +22,9 @@ typedef void* (*valloc_t)(size_t size);
 typedef int   (*posix_memalign_t)(void** memptr, size_t alignment, size_t size);
 typedef void  (*free_t)(void *ptr);
 
-typedef enum {
-    EMPTY,
-    DELETED,
-    USED
-} state;
-
 typedef struct allocation {
     void*  ptr;
     size_t size;
-    state  state;
 } allocation;
 
 static malloc_t         temp_malloc, real_malloc;
@@ -113,36 +106,17 @@ unsigned hash(void* ptr)
 int lookup(void* ptr)
 {
     int i = hash(ptr);
-    int relocate = -1;
-    int location = -1;
 
     for(int j=0; j<MAX_ALLOCS; j++)
     {
-        if(allocations[i].ptr == ptr)
-        {
-            location = i;
-            break;
-        }
-
-        if(allocations[i].state == DELETED && relocate == -1)
-            relocate = i;
-        else if(allocations[i].state == EMPTY)
-            return -1;
+        if(allocations[i].ptr == ptr) return i;
+        if(!allocations[i].ptr) return -1;
 
         i++;
         i %= MAX_ALLOCS;
     }
 
-    if(location == -1) return -1;
-
-    if(relocate == -1) return location;
-
-    allocations[relocate] = allocations[location];
-
-    allocations[location].ptr = NULL;
-    allocations[location].state = DELETED;
-
-    return relocate;
+    return -1;
 }
 
 int slot(void* ptr)
@@ -151,7 +125,7 @@ int slot(void* ptr)
 
     for(int j=0; j<MAX_ALLOCS; j++)
     {
-        if(allocations[i].state != USED) return i;
+        if(!allocations[i].ptr) return i;
 
         i++;
         i %= MAX_ALLOCS;
@@ -172,7 +146,6 @@ void save_allocation(void* ptr, size_t size) {
 
     allocations[i].ptr = ptr;
     allocations[i].size = size;
-    allocations[i].state = USED;
 
     total_size += size;
     total_allocs++;
@@ -188,19 +161,30 @@ void clear_allocation(void* ptr) {
         return;
     }
 
+    int j = i;
+    for(;;)
+    {
+        j++;
+        j %= MAX_ALLOCS;
+        if(!allocations[j].ptr) break;
+        int k = hash(allocations[j].ptr);
+        if((j > i && (k <= i || k > j)) || (j < i && (k <= i && k > j)))
+        {
+            allocations[i] = allocations[j];
+            i = j;
+        }
+    }
+
     total_size -= allocations[i].size;
     total_allocs--;
 
     allocations[i].ptr = NULL;
-    allocations[i].state = DELETED;
 }
 
 void clear_allocations() {
     for(int i=0; i<MAX_ALLOCS; i++)
     {
         allocations[i].ptr = NULL;
-        allocations[i].size = 0;
-        allocations[i].state = EMPTY;
     }
 }
 
