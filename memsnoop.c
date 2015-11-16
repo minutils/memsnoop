@@ -77,6 +77,7 @@ void* early_calloc(size_t nmemb, size_t size) {
 }
 
 void early_free(void *ptr) {
+    (void)ptr;
 }
 
 void error(char* format, ...) {
