@@ -271,18 +271,16 @@ void free(void *ptr) {
     unlock();
 }
 
-void* calloc(size_t nmemb, size_t size) {
+void* calloc(size_t n, size_t size) {
     if(!initialized) initialize();
 
     lock();
 
-    size_t total_size = nmemb*size;
+    void* result = real_calloc(n, size);
 
-    void* result = real_calloc(nmemb, size);
+    save_allocation(result, n*size);
 
-    save_allocation(result, total_size);
-
-    if(config_print) fprintf(stderr, "calloc(%zu) = %p [%lu/%lu]\n", nmemb*size, result, total_size, total_allocs);
+    if(config_print) fprintf(stderr, "calloc(%zu) = %p [%lu/%lu]\n", n*size, result, total_size, total_allocs);
 
     unlock();
 
