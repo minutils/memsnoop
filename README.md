@@ -20,6 +20,17 @@ cmake .
 make
 LD_PRELOAD=./libmemsnoop.so ls
 ```
+
+## Output sample
+```
+malloc(568) = 0x2257010 [568/1]
+```
+`malloc(568)` was called, returning a pointer to `0x2257010`, there are currently 568 total bytes allocated in 1 allocation.
+```
+free(0x2257010) [0/0]
+```
+`free(0x2257010)` was called, freeing that chunk.  Now there are no outstanding allocations.
+
 ## Options
 
 export  | result
