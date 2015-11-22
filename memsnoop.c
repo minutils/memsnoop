@@ -13,6 +13,9 @@
 #include <inttypes.h>
 #include <stdarg.h>
 #include <pthread.h>
+#include <string.h>
+#include <errno.h>
+#include <sys/mman.h>
 
 typedef void* (*malloc_t)(size_t size);
 typedef void* (*calloc_t)(size_t nmemb, size_t size);
@@ -22,9 +25,16 @@ typedef void* (*valloc_t)(size_t size);
 typedef int   (*posix_memalign_t)(void** memptr, size_t alignment, size_t size);
 typedef void  (*free_t)(void *ptr);
 
+typedef enum {
+    NATIVE,
+    MMAP
+} type;
+
 typedef struct allocation {
     void*  ptr;
     size_t size;
+    size_t fullsize;
+    type   type;
 } allocation;
 
 static malloc_t         temp_malloc, real_malloc;
@@ -48,6 +58,7 @@ static unsigned long total_allocs = 0;
 static int config_print = 1;
 static int config_abort = 1;
 static int config_track = 1;
+static int config_mmap = 0;
 
 static int initialized = 0;
 
@@ -146,8 +157,14 @@ int slot(void* ptr)
     return -1;
 }
 
-void save_allocation(void* ptr, size_t size) {
+void save_allocation(void* ptr, size_t size, size_t fullsize, type type) {
     if(!config_track) return;
+
+    if(!ptr) {
+        error("asked to save a null pointer!");
+        abort();
+    }
+
     int i = slot(ptr);
 
     if(i == -1)
@@ -158,6 +175,8 @@ void save_allocation(void* ptr, size_t size) {
 
     allocations[i].ptr = ptr;
     allocations[i].size = size;
+    allocations[i].fullsize = fullsize;
+    allocations[i].type = type;
 
     total_size += size;
     total_allocs++;
@@ -206,6 +225,7 @@ void initialize() {
     if(getenv("MEMSNOOP_NO_PRINT")) config_print = 0;
     if(getenv("MEMSNOOP_NO_TRACK")) config_track = 0;
     if(getenv("MEMSNOOP_NO_ABORT")) config_abort = 0;
+    if(getenv("MEMSNOOP_MMAP"))     config_mmap  = 1;
 
     real_malloc         = early_malloc;
     real_calloc         = early_calloc;
@@ -239,14 +259,70 @@ void initialize() {
     real_posix_memalign = temp_posix_memalign;
 }
 
+allocation map_pages(size_t size, size_t alignment)
+{
+    int pagesize = getpagesize();
+    int pages = size / pagesize;
+    if(pages*pagesize < size) pages++;
+    pages++;
+
+    // some apps need alignment greater that pagesize.  there's no way to ask mmap for this!
+    // so we allocate more than we need, and then find within the larger space a properly aligned
+    // subsection.  we then munmap the unneeded parts.
+
+    int pagealign = 0;
+    if(alignment > pagesize) {
+        pagealign = alignment / pagesize;
+        pages += pagealign;
+    }
+
+    void* ptr = mmap(0, pagesize*(pages + pagealign), PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+
+    if(ptr == MAP_FAILED) {
+        error("map failed! %s", strerror(errno));
+    }
+
+    if(pagealign) {
+        int adjust = 0;
+        while(((uintptr_t)ptr / pagesize) % pagealign != 0) {
+            munmap(ptr, pagesize);
+            ptr += pagesize;
+            adjust++;
+        }
+
+        pagealign -= adjust;
+
+        if(pagealign) {
+            munmap(ptr + pagesize*(pages-pagealign), pagesize*pagealign);
+        }
+    }
+
+    mprotect(ptr+(pagesize*(pages-1)), pagesize, PROT_NONE);
+
+    allocation result;
+    result.ptr = ptr;
+    result.size = size;
+    result.fullsize = pagesize*pages;
+    result.type = MMAP;
+
+    return result;
+}
+
 void* malloc(size_t size) {
     if(!initialized) initialize();
 
     lock();
 
-    void* result = real_malloc(size);
+    void* result;
 
-    save_allocation(result, size);
+    if(config_mmap) {
+        allocation a = map_pages(size, 0);
+        result = a.ptr;
+        save_allocation(a.ptr, size, a.fullsize, MMAP);
+    } else {
+        result = real_malloc(size);
+        save_allocation(result, size, 0, NATIVE);
+    }
 
     if(config_print) fprintf(stderr, "malloc(%zu) = %p [%lu/%lu]\n", size, result, total_size, total_allocs);
 
@@ -262,7 +338,14 @@ void free(void *ptr) {
 
     lock();
 
-    real_free(ptr);
+    if(lookup(ptr) == -1) {
+        error("bad free %p", ptr);
+    }
+
+    if(allocations[lookup(ptr)].type == NATIVE)
+        real_free(ptr);
+    else
+        munmap(ptr, allocations[lookup(ptr)].fullsize);
 
     clear_allocation(ptr);
 
@@ -276,9 +359,16 @@ void* calloc(size_t n, size_t size) {
 
     lock();
 
-    void* result = real_calloc(n, size);
+    void* result;
 
-    save_allocation(result, n*size);
+    if(config_mmap) {
+        allocation a = map_pages(n*size, 0);
+        result = a.ptr;
+        save_allocation(a.ptr, n*size, a.fullsize, MMAP);
+    } else {
+        result = real_calloc(n, size);
+        save_allocation(result, n*size, 0, NATIVE);
+    }
 
     if(config_print) fprintf(stderr, "calloc(%zu) = %p [%lu/%lu]\n", n*size, result, total_size, total_allocs);
 
@@ -292,7 +382,27 @@ void* realloc(void *ptr, size_t size) {
 
     lock();
 
-    void* result = real_realloc(ptr, size);
+    void* result;
+    int location = ptr ? lookup(ptr) : -1;
+    type type = location == -1 ? NATIVE : allocations[location].type;
+    int fullsize = 0;
+
+    if(type == MMAP)
+    {
+        allocation a = map_pages(size, 0);
+        result = a.ptr;
+        fullsize = a.fullsize;
+
+        int oldsize = allocations[lookup(ptr)].fullsize - getpagesize();
+        int newsize = fullsize - getpagesize();
+        int minsize = oldsize < newsize ? oldsize : newsize;
+        memcpy(result, ptr, minsize);
+        munmap(ptr, allocations[lookup(ptr)].fullsize);
+    }
+    else
+    {
+        result = real_realloc(ptr, size);
+    }
 
     if(ptr) {
         clear_allocation(ptr);
@@ -300,7 +410,7 @@ void* realloc(void *ptr, size_t size) {
         if(config_print) fprintf(stderr, "realloc_free(%p) [%lu/%lu]\n", ptr, total_size, total_allocs);
     }
 
-    save_allocation(result, size);
+    save_allocation(result, size, fullsize, type);
 
     if(config_print) fprintf(stderr, "realloc_malloc(%p, %zu) = %p [%lu/%lu]\n", ptr, size, result, total_size, total_allocs);
 
@@ -314,9 +424,16 @@ void* valloc(size_t size) {
 
     lock();
 
-    void* result = real_valloc(size);
+    void* result;
 
-    save_allocation(result, size);
+    if(config_mmap) {
+        allocation a = map_pages(size, 0);
+        result = a.ptr;
+        save_allocation(a.ptr, size, a.fullsize, MMAP);
+    } else {
+        result = real_valloc(size);
+        save_allocation(result, size, 0, NATIVE);
+    }
 
     if(config_print) fprintf(stderr, "valloc(%zu) = %p [%lu/%lu]\n", size, result, total_size, total_allocs);
 
@@ -325,14 +442,21 @@ void* valloc(size_t size) {
     return result;
 }
 
-void* memalign(size_t blocksize, size_t size) {
+void* memalign(size_t alignment, size_t size) {
     if(!initialized) initialize();
 
     lock();
 
-    void* result = real_memalign(blocksize, size);
+    void* result;
 
-    save_allocation(result, size);
+    if(config_mmap) {
+        allocation a = map_pages(size, alignment);
+        result = a.ptr;
+        save_allocation(a.ptr, size, a.fullsize, MMAP);
+    } else {
+        result = real_memalign(alignment, size);
+        save_allocation(result, size, 0, NATIVE);
+    }
 
     if(config_print) fprintf(stderr, "memalign(%zu) = %p [%lu/%lu]\n", size, result, total_size, total_allocs);
 
@@ -346,9 +470,16 @@ int posix_memalign(void** memptr, size_t alignment, size_t size) {
 
     lock();
 
-    int result = real_posix_memalign(memptr, alignment, size);
+    int result = 0;
 
-    save_allocation(*memptr, size);
+    if(config_mmap) {
+        allocation a = map_pages(size, alignment);
+        *memptr = a.ptr;
+        save_allocation(a.ptr, size, a.fullsize, MMAP);
+    } else {
+        result = real_posix_memalign(memptr, alignment, size);
+        save_allocation(*memptr, size, 0, NATIVE);
+    }
 
     if(config_print) fprintf(stderr, "posix_memalign(%zu) = %p [%lu/%lu]\n", size, *memptr, total_size, total_allocs);
 
