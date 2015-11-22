@@ -227,6 +227,11 @@ void initialize() {
     if(getenv("MEMSNOOP_NO_ABORT")) config_abort = 0;
     if(getenv("MEMSNOOP_MMAP"))     config_mmap  = 1;
 
+    if(!config_track && config_mmap) {
+        error("MEMSNOOP_MMAP and MEMSNOOP_NO_TRACK cannot both be set");
+        abort();
+    }
+
     real_malloc         = early_malloc;
     real_calloc         = early_calloc;
     real_realloc        = NULL;
@@ -338,11 +343,11 @@ void free(void *ptr) {
 
     lock();
 
-    if(lookup(ptr) == -1) {
+    if(config_track && lookup(ptr) == -1) {
         error("bad free %p", ptr);
     }
 
-    if(allocations[lookup(ptr)].type == NATIVE)
+    if(!config_track || allocations[lookup(ptr)].type == NATIVE)
         real_free(ptr);
     else
         munmap(ptr, allocations[lookup(ptr)].fullsize);
