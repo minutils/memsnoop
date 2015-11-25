@@ -26,11 +26,6 @@ typedef int   (*posix_memalign_t)(void** memptr, size_t alignment, size_t size);
 typedef void  (*free_t)(void *ptr);
 
 typedef enum {
-    NATIVE,
-    MMAP
-} type;
-
-typedef enum {
     NOT_INITIALIZED,
     INITIALIZING,
     INITIALIZED
@@ -42,7 +37,6 @@ typedef struct allocation {
     void*  ptr;
     size_t size;
     size_t fullsize;
-    type   type;
 } allocation;
 
 static malloc_t         real_malloc;
@@ -176,7 +170,7 @@ int slot(void* ptr)
     return -1;
 }
 
-void save_allocation(void* ptr, size_t size, size_t fullsize, type type)
+void save_allocation(void* ptr, size_t size, size_t fullsize)
 {
     if(!config_track) return;
 
@@ -193,7 +187,6 @@ void save_allocation(void* ptr, size_t size, size_t fullsize, type type)
     allocations[i].ptr = ptr;
     allocations[i].size = size;
     allocations[i].fullsize = fullsize;
-    allocations[i].type = type;
 
     total_size += size;
     total_allocs++;
@@ -314,7 +307,6 @@ allocation map_pages(size_t size, size_t alignment)
     result.ptr = ptr;
     result.size = size;
     result.fullsize = pagesize*pages;
-    result.type = MMAP;
 
     return result;
 }
@@ -330,10 +322,10 @@ void* malloc(size_t size)
     if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(size, 0);
         result = a.ptr;
-        save_allocation(a.ptr, size, a.fullsize, MMAP);
+        save_allocation(a.ptr, size, a.fullsize);
     } else {
         result = real_malloc(size);
-        save_allocation(result, size, 0, NATIVE);
+        save_allocation(result, size, 0);
     }
 
     info("malloc(%zu) = %p [%lu/%lu]", size, result, total_size, total_allocs);
@@ -355,7 +347,7 @@ void free(void *ptr)
         error("bad free %p", ptr);
     }
 
-    if(config_mmap || (config_track && allocations[lookup(ptr)].type == MMAP) || initialized == INITIALIZING)
+    if(config_mmap || initialized == INITIALIZING)
         safe_munmap(ptr, allocations[lookup(ptr)].fullsize);
     else
         real_free(ptr);
@@ -378,10 +370,10 @@ void* calloc(size_t n, size_t size)
     if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(n*size, 0);
         result = a.ptr;
-        save_allocation(a.ptr, n*size, a.fullsize, MMAP);
+        save_allocation(a.ptr, n*size, a.fullsize);
     } else {
         result = real_calloc(n, size);
-        save_allocation(result, n*size, 0, NATIVE);
+        save_allocation(result, n*size, 0);
     }
 
     info("calloc(%zu) = %p [%lu/%lu]", n*size, result, total_size, total_allocs);
@@ -426,7 +418,7 @@ void* realloc(void *ptr, size_t size)
         info("realloc_free(%p) [%lu/%lu]", ptr, total_size, total_allocs);
     }
 
-    save_allocation(result, size, fullsize, config_mmap ? MMAP : NATIVE);
+    save_allocation(result, size, fullsize);
 
     info("realloc_malloc(%p, %zu) = %p [%lu/%lu]", ptr, size, result, total_size, total_allocs);
 
@@ -446,10 +438,10 @@ void* valloc(size_t size)
     if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(size, 0);
         result = a.ptr;
-        save_allocation(a.ptr, size, a.fullsize, MMAP);
+        save_allocation(a.ptr, size, a.fullsize);
     } else {
         result = real_valloc(size);
-        save_allocation(result, size, 0, NATIVE);
+        save_allocation(result, size, 0);
     }
 
     info("valloc(%zu) = %p [%lu/%lu]", size, result, total_size, total_allocs);
@@ -470,10 +462,10 @@ void* memalign(size_t alignment, size_t size)
     if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(size, alignment);
         result = a.ptr;
-        save_allocation(a.ptr, size, a.fullsize, MMAP);
+        save_allocation(a.ptr, size, a.fullsize);
     } else {
         result = real_memalign(alignment, size);
-        save_allocation(result, size, 0, NATIVE);
+        save_allocation(result, size, 0);
     }
 
     info("memalign(%zu) = %p [%lu/%lu]", size, result, total_size, total_allocs);
@@ -494,10 +486,10 @@ int posix_memalign(void** memptr, size_t alignment, size_t size)
     if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(size, alignment);
         *memptr = a.ptr;
-        save_allocation(a.ptr, size, a.fullsize, MMAP);
+        save_allocation(a.ptr, size, a.fullsize);
     } else {
         result = real_posix_memalign(memptr, alignment, size);
-        save_allocation(*memptr, size, 0, NATIVE);
+        save_allocation(*memptr, size, 0);
     }
 
     info("posix_memalign(%zu) = %p [%lu/%lu]", size, *memptr, total_size, total_allocs);
