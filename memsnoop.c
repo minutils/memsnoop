@@ -30,6 +30,14 @@ typedef enum {
     MMAP
 } type;
 
+typedef enum {
+    NOT_INITIALIZED,
+    INITIALIZING,
+    INITIALIZED
+} status;
+
+static status initialized = NOT_INITIALIZED;
+
 typedef struct allocation {
     void*  ptr;
     size_t size;
@@ -37,16 +45,13 @@ typedef struct allocation {
     type   type;
 } allocation;
 
-static malloc_t         temp_malloc, real_malloc;
-static calloc_t         temp_calloc, real_calloc;
-static realloc_t        temp_realloc, real_realloc;
-static memalign_t       temp_memalign, real_memalign;
-static valloc_t         temp_valloc, real_valloc;
-static posix_memalign_t temp_posix_memalign, real_posix_memalign;
-static free_t           temp_free, real_free;
-
-static char tmpbuf[1024];
-static unsigned long tmppos = 0;
+static malloc_t         real_malloc;
+static calloc_t         real_calloc;
+static realloc_t        real_realloc;
+static memalign_t       real_memalign;
+static valloc_t         real_valloc;
+static posix_memalign_t real_posix_memalign;
+static free_t           real_free;
 
 #define MAX_ALLOCS 1024*1024
 
@@ -60,8 +65,6 @@ static int config_abort = 1;
 static int config_track = 1;
 static int config_mmap = 0;
 
-static int initialized = 0;
-
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void lock()
@@ -72,28 +75,6 @@ void lock()
 void unlock()
 {
     pthread_mutex_unlock(&mutex);
-}
-
-void* early_malloc(size_t size)
-{
-    if (tmppos + size >= sizeof(tmpbuf)) exit(1);
-    void *retptr = tmpbuf + tmppos;
-    tmppos += size;
-    return retptr;
-}
-
-void* early_calloc(size_t nmemb, size_t size)
-{
-    void *ptr = early_malloc(nmemb * size);
-    unsigned int i = 0;
-    for (; i < nmemb * size; ++i)
-        *((char*)(ptr + i)) = '\0';
-    return ptr;
-}
-
-void early_free(void *ptr)
-{
-    (void)ptr;
 }
 
 void info(char* format, ...)  __attribute__((format(printf, 1, 2)));
@@ -257,7 +238,7 @@ void clear_allocations()
 
 void initialize()
 {
-    initialized = 1;
+    initialized = INITIALIZING;
 
     if(getenv("MEMSNOOP_NO_PRINT")) config_print = 0;
     if(getenv("MEMSNOOP_NO_TRACK")) config_track = 0;
@@ -268,34 +249,20 @@ void initialize()
         fatal("MEMSNOOP_MMAP and MEMSNOOP_NO_TRACK cannot both be set");
     }
 
-    real_malloc         = early_malloc;
-    real_calloc         = early_calloc;
-    real_realloc        = NULL;
-    real_free           = early_free;
-    real_memalign       = NULL;
-    real_valloc         = NULL;
-    real_posix_memalign = NULL;
+    real_malloc         = dlsym(RTLD_NEXT, "malloc");
+    real_calloc         = dlsym(RTLD_NEXT, "calloc");
+    real_realloc        = dlsym(RTLD_NEXT, "realloc");
+    real_free           = dlsym(RTLD_NEXT, "free");
+    real_memalign       = dlsym(RTLD_NEXT, "memalign");
+    real_valloc         = dlsym(RTLD_NEXT, "valloc");
+    real_posix_memalign = dlsym(RTLD_NEXT, "posix_memalign");
 
-    temp_malloc         = dlsym(RTLD_NEXT, "malloc");
-    temp_calloc         = dlsym(RTLD_NEXT, "calloc");
-    temp_realloc        = dlsym(RTLD_NEXT, "realloc");
-    temp_free           = dlsym(RTLD_NEXT, "free");
-    temp_memalign       = dlsym(RTLD_NEXT, "memalign");
-    temp_valloc         = dlsym(RTLD_NEXT, "valloc");
-    temp_posix_memalign = dlsym(RTLD_NEXT, "posix_memalign");
-
-    if (!temp_malloc || !temp_calloc || !temp_realloc || !temp_memalign ||
-        !temp_valloc || !temp_posix_memalign || !temp_free) {
+    if (!real_malloc || !real_calloc || !real_realloc || !real_memalign ||
+        !real_valloc || !real_posix_memalign || !real_free) {
         fatal("Error in `dlsym`: %s", dlerror());
     }
 
-    real_malloc         = temp_malloc;
-    real_calloc         = temp_calloc;
-    real_realloc        = temp_realloc;
-    real_free           = temp_free;
-    real_memalign       = temp_memalign;
-    real_valloc         = temp_valloc;
-    real_posix_memalign = temp_posix_memalign;
+    initialized = INITIALIZED;
 }
 
 allocation map_pages(size_t size, size_t alignment)
@@ -355,7 +322,7 @@ void* malloc(size_t size)
 
     void* result;
 
-    if(config_mmap) {
+    if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(size, 0);
         result = a.ptr;
         save_allocation(a.ptr, size, a.fullsize, MMAP);
@@ -383,10 +350,10 @@ void free(void *ptr)
         error("bad free %p", ptr);
     }
 
-    if(!config_track || allocations[lookup(ptr)].type == NATIVE)
-        real_free(ptr);
-    else
+    if(config_track || allocations[lookup(ptr)].type == MMAP || initialized == INITIALIZING)
         munmap(ptr, allocations[lookup(ptr)].fullsize);
+    else
+        real_free(ptr);
 
     clear_allocation(ptr);
 
@@ -403,7 +370,7 @@ void* calloc(size_t n, size_t size)
 
     void* result;
 
-    if(config_mmap) {
+    if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(n*size, 0);
         result = a.ptr;
         save_allocation(a.ptr, n*size, a.fullsize, MMAP);
@@ -422,6 +389,10 @@ void* calloc(size_t n, size_t size)
 void* realloc(void *ptr, size_t size)
 {
     if(!initialized) initialize();
+
+    if(initialized == INITIALIZING) {
+        fatal("realloc not supported while initializing");
+    }
 
     lock();
 
@@ -467,7 +438,7 @@ void* valloc(size_t size)
 
     void* result;
 
-    if(config_mmap) {
+    if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(size, 0);
         result = a.ptr;
         save_allocation(a.ptr, size, a.fullsize, MMAP);
@@ -491,7 +462,7 @@ void* memalign(size_t alignment, size_t size)
 
     void* result;
 
-    if(config_mmap) {
+    if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(size, alignment);
         result = a.ptr;
         save_allocation(a.ptr, size, a.fullsize, MMAP);
@@ -515,7 +486,7 @@ int posix_memalign(void** memptr, size_t alignment, size_t size)
 
     int result = 0;
 
-    if(config_mmap) {
+    if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(size, alignment);
         *memptr = a.ptr;
         save_allocation(a.ptr, size, a.fullsize, MMAP);
