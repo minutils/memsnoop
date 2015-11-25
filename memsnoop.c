@@ -91,13 +91,48 @@ void early_free(void *ptr) {
     (void)ptr;
 }
 
-void error(char* format, ...) {
-    va_list(args);
-    va_start(args, format);
+void info(char* format, ...)  __attribute__((format(printf, 1, 2)));
+void warn(char* format, ...)  __attribute__((format(printf, 1, 2)));
+void error(char* format, ...) __attribute__((format(printf, 1, 2)));
+void fatal(char* format, ...) __attribute__((format(printf, 1, 2)));
+
+void vprint(char* format, va_list args)
+{
     vfprintf(stderr, format, args);
     fprintf(stderr, "\n");
+}
+
+#define CALL_VPRINT \
+    do { \
+        va_list(args); \
+        va_start(args, format); \
+        vprint(format, args); \
+        va_end(args); \
+    } while(0);
+
+void info(char* format, ...)
+{
+    if(config_print) CALL_VPRINT
+}
+
+void warn(char* format, ...)
+{
+    CALL_VPRINT
+}
+
+void error(char* format, ...)
+{
+    CALL_VPRINT
     if(config_abort) abort();
 }
+
+void fatal(char* format, ...)
+{
+    CALL_VPRINT
+    abort();
+}
+
+#undef CALL_VPRINT
 
 unsigned hash(void* ptr)
 {
@@ -162,7 +197,7 @@ void save_allocation(void* ptr, size_t size, size_t fullsize, type type) {
 
     if(!ptr) {
         error("asked to save a null pointer!");
-        abort();
+        return;
     }
 
     int i = slot(ptr);
@@ -228,8 +263,7 @@ void initialize() {
     if(getenv("MEMSNOOP_MMAP"))     config_mmap  = 1;
 
     if(!config_track && config_mmap) {
-        error("MEMSNOOP_MMAP and MEMSNOOP_NO_TRACK cannot both be set");
-        abort();
+        fatal("MEMSNOOP_MMAP and MEMSNOOP_NO_TRACK cannot both be set");
     }
 
     real_malloc         = early_malloc;
@@ -251,8 +285,7 @@ void initialize() {
     if (!temp_malloc || !temp_calloc || !temp_realloc || !temp_memalign ||
         !temp_valloc || !temp_posix_memalign || !temp_free)
     {
-        fprintf(stderr, "Error in `dlsym`: %s", dlerror());
-        abort();
+        fatal("Error in `dlsym`: %s", dlerror());
     }
 
     real_malloc         = temp_malloc;
@@ -284,7 +317,7 @@ allocation map_pages(size_t size, size_t alignment)
     void* ptr = mmap(0, pagesize*(pages + pagealign), PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
 
     if(ptr == MAP_FAILED) {
-        error("map failed! %s", strerror(errno));
+        fatal("mmap failed! %s", strerror(errno));
     }
 
     if(pagealign) {
@@ -329,7 +362,7 @@ void* malloc(size_t size) {
         save_allocation(result, size, 0, NATIVE);
     }
 
-    if(config_print) fprintf(stderr, "malloc(%zu) = %p [%lu/%lu]\n", size, result, total_size, total_allocs);
+    info("malloc(%zu) = %p [%lu/%lu]", size, result, total_size, total_allocs);
 
     unlock();
 
@@ -354,7 +387,7 @@ void free(void *ptr) {
 
     clear_allocation(ptr);
 
-    if(config_print) fprintf(stderr, "free(%p) [%lu/%lu]\n", ptr, total_size, total_allocs);
+    info("free(%p) [%lu/%lu]", ptr, total_size, total_allocs);
 
     unlock();
 }
@@ -375,7 +408,7 @@ void* calloc(size_t n, size_t size) {
         save_allocation(result, n*size, 0, NATIVE);
     }
 
-    if(config_print) fprintf(stderr, "calloc(%zu) = %p [%lu/%lu]\n", n*size, result, total_size, total_allocs);
+    info("calloc(%zu) = %p [%lu/%lu]", n*size, result, total_size, total_allocs);
 
     unlock();
 
@@ -412,12 +445,12 @@ void* realloc(void *ptr, size_t size) {
     if(ptr) {
         clear_allocation(ptr);
 
-        if(config_print) fprintf(stderr, "realloc_free(%p) [%lu/%lu]\n", ptr, total_size, total_allocs);
+        info("realloc_free(%p) [%lu/%lu]", ptr, total_size, total_allocs);
     }
 
     save_allocation(result, size, fullsize, type);
 
-    if(config_print) fprintf(stderr, "realloc_malloc(%p, %zu) = %p [%lu/%lu]\n", ptr, size, result, total_size, total_allocs);
+    info("realloc_malloc(%p, %zu) = %p [%lu/%lu]", ptr, size, result, total_size, total_allocs);
 
     unlock();
 
@@ -440,7 +473,7 @@ void* valloc(size_t size) {
         save_allocation(result, size, 0, NATIVE);
     }
 
-    if(config_print) fprintf(stderr, "valloc(%zu) = %p [%lu/%lu]\n", size, result, total_size, total_allocs);
+    info("valloc(%zu) = %p [%lu/%lu]", size, result, total_size, total_allocs);
 
     unlock();
 
@@ -463,7 +496,7 @@ void* memalign(size_t alignment, size_t size) {
         save_allocation(result, size, 0, NATIVE);
     }
 
-    if(config_print) fprintf(stderr, "memalign(%zu) = %p [%lu/%lu]\n", size, result, total_size, total_allocs);
+    info("memalign(%zu) = %p [%lu/%lu]", size, result, total_size, total_allocs);
 
     unlock();
 
@@ -486,7 +519,7 @@ int posix_memalign(void** memptr, size_t alignment, size_t size) {
         save_allocation(*memptr, size, 0, NATIVE);
     }
 
-    if(config_print) fprintf(stderr, "posix_memalign(%zu) = %p [%lu/%lu]\n", size, *memptr, total_size, total_allocs);
+    info("posix_memalign(%zu) = %p [%lu/%lu]", size, *memptr, total_size, total_allocs);
 
     unlock();
 
