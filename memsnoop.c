@@ -36,7 +36,6 @@ static status initialized = NOT_INITIALIZED;
 typedef struct allocation {
     void*  ptr;
     size_t size;
-    size_t fullsize;
 } allocation;
 
 static malloc_t         real_malloc;
@@ -58,6 +57,8 @@ static int config_print = 1;
 static int config_abort = 1;
 static int config_track = 1;
 static int config_mmap = 0;
+
+static int pagesize = 0;
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -170,7 +171,7 @@ int slot(void* ptr)
     return -1;
 }
 
-void save_allocation(void* ptr, size_t size, size_t fullsize)
+void save_allocation(void* ptr, size_t size)
 {
     if(!config_track) return;
 
@@ -186,7 +187,6 @@ void save_allocation(void* ptr, size_t size, size_t fullsize)
 
     allocations[i].ptr = ptr;
     allocations[i].size = size;
-    allocations[i].fullsize = fullsize;
 
     total_size += size;
     total_allocs++;
@@ -231,6 +231,8 @@ void initialize()
 {
     initialized = INITIALIZING;
 
+    pagesize = getpagesize();
+
     if(getenv("MEMSNOOP_NO_PRINT")) config_print = 0;
     if(getenv("MEMSNOOP_NO_TRACK")) config_track = 0;
     if(getenv("MEMSNOOP_NO_ABORT")) config_abort = 0;
@@ -263,9 +265,16 @@ void safe_munmap(void* addr, size_t len)
     }
 }
 
+size_t fullsize(size_t size)
+{
+    int pages = size / pagesize;
+    if(pages*pagesize < size) pages++;
+    pages++;
+    return pages*pagesize;
+}
+
 allocation map_pages(size_t size, size_t alignment)
 {
-    int pagesize = getpagesize();
     int pages = size / pagesize;
     if(pages*pagesize < size) pages++;
     pages++;
@@ -306,7 +315,6 @@ allocation map_pages(size_t size, size_t alignment)
     allocation result;
     result.ptr = ptr;
     result.size = size;
-    result.fullsize = pagesize*pages;
 
     return result;
 }
@@ -322,10 +330,10 @@ void* malloc(size_t size)
     if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(size, 0);
         result = a.ptr;
-        save_allocation(a.ptr, size, a.fullsize);
+        save_allocation(a.ptr, size);
     } else {
         result = real_malloc(size);
-        save_allocation(result, size, 0);
+        save_allocation(result, size);
     }
 
     info("malloc(%zu) = %p [%lu/%lu]", size, result, total_size, total_allocs);
@@ -348,7 +356,7 @@ void free(void *ptr)
     }
 
     if(config_mmap || initialized == INITIALIZING)
-        safe_munmap(ptr, allocations[lookup(ptr)].fullsize);
+        safe_munmap(ptr, fullsize(allocations[lookup(ptr)].size));
     else
         real_free(ptr);
 
@@ -370,10 +378,10 @@ void* calloc(size_t n, size_t size)
     if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(n*size, 0);
         result = a.ptr;
-        save_allocation(a.ptr, n*size, a.fullsize);
+        save_allocation(a.ptr, n*size);
     } else {
         result = real_calloc(n, size);
-        save_allocation(result, n*size, 0);
+        save_allocation(result, n*size);
     }
 
     info("calloc(%zu) = %p [%lu/%lu]", n*size, result, total_size, total_allocs);
@@ -394,19 +402,17 @@ void* realloc(void *ptr, size_t size)
     lock();
 
     void* result;
-    int fullsize = 0;
 
     if(config_mmap) {
         allocation a = map_pages(size, 0);
         result = a.ptr;
-        fullsize = a.fullsize;
 
         if(ptr) {
-            int oldsize = allocations[lookup(ptr)].fullsize - getpagesize();
-            int newsize = fullsize - getpagesize();
+            int oldsize = fullsize(allocations[lookup(ptr)].size) - pagesize;
+            int newsize = fullsize(size) - pagesize;
             int minsize = oldsize < newsize ? oldsize : newsize;
             memcpy(result, ptr, minsize);
-            safe_munmap(ptr, allocations[lookup(ptr)].fullsize);
+            safe_munmap(ptr, fullsize(allocations[lookup(ptr)].size));
         }
     } else {
         result = real_realloc(ptr, size);
@@ -418,7 +424,7 @@ void* realloc(void *ptr, size_t size)
         info("realloc_free(%p) [%lu/%lu]", ptr, total_size, total_allocs);
     }
 
-    save_allocation(result, size, fullsize);
+    save_allocation(result, size);
 
     info("realloc_malloc(%p, %zu) = %p [%lu/%lu]", ptr, size, result, total_size, total_allocs);
 
@@ -438,10 +444,10 @@ void* valloc(size_t size)
     if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(size, 0);
         result = a.ptr;
-        save_allocation(a.ptr, size, a.fullsize);
+        save_allocation(a.ptr, size);
     } else {
         result = real_valloc(size);
-        save_allocation(result, size, 0);
+        save_allocation(result, size);
     }
 
     info("valloc(%zu) = %p [%lu/%lu]", size, result, total_size, total_allocs);
@@ -462,10 +468,10 @@ void* memalign(size_t alignment, size_t size)
     if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(size, alignment);
         result = a.ptr;
-        save_allocation(a.ptr, size, a.fullsize);
+        save_allocation(a.ptr, size);
     } else {
         result = real_memalign(alignment, size);
-        save_allocation(result, size, 0);
+        save_allocation(result, size);
     }
 
     info("memalign(%zu) = %p [%lu/%lu]", size, result, total_size, total_allocs);
@@ -486,10 +492,10 @@ int posix_memalign(void** memptr, size_t alignment, size_t size)
     if(config_mmap || initialized == INITIALIZING) {
         allocation a = map_pages(size, alignment);
         *memptr = a.ptr;
-        save_allocation(a.ptr, size, a.fullsize);
+        save_allocation(a.ptr, size);
     } else {
         result = real_posix_memalign(memptr, alignment, size);
-        save_allocation(*memptr, size, 0);
+        save_allocation(*memptr, size);
     }
 
     info("posix_memalign(%zu) = %p [%lu/%lu]", size, *memptr, total_size, total_allocs);
