@@ -263,6 +263,13 @@ void initialize()
     initialized = INITIALIZED;
 }
 
+void safe_munmap(void* addr, size_t len)
+{
+    if(munmap(addr, len) == -1) {
+        fatal("munmap(%p, %zu) failed: %s", addr, len, strerror(errno));
+    }
+}
+
 allocation map_pages(size_t size, size_t alignment)
 {
     int pagesize = getpagesize();
@@ -289,7 +296,7 @@ allocation map_pages(size_t size, size_t alignment)
     if(pagealign) {
         int adjust = 0;
         while(((uintptr_t)ptr / pagesize) % pagealign != 0) {
-            munmap(ptr, pagesize);
+            safe_munmap(ptr, pagesize);
             ptr += pagesize;
             adjust++;
         }
@@ -297,7 +304,7 @@ allocation map_pages(size_t size, size_t alignment)
         pagealign -= adjust;
 
         if(pagealign) {
-            munmap(ptr + pagesize*(pages-pagealign), pagesize*pagealign);
+            safe_munmap(ptr + pagesize*(pages-pagealign), pagesize*pagealign);
         }
     }
 
@@ -348,8 +355,8 @@ void free(void *ptr)
         error("bad free %p", ptr);
     }
 
-    if(config_track || allocations[lookup(ptr)].type == MMAP || initialized == INITIALIZING)
-        munmap(ptr, allocations[lookup(ptr)].fullsize);
+    if(config_mmap || (config_track && allocations[lookup(ptr)].type == MMAP) || initialized == INITIALIZING)
+        safe_munmap(ptr, allocations[lookup(ptr)].fullsize);
     else
         real_free(ptr);
 
@@ -395,20 +402,20 @@ void* realloc(void *ptr, size_t size)
     lock();
 
     void* result;
-    int location = ptr ? lookup(ptr) : -1;
-    type type = location == -1 ? NATIVE : allocations[location].type;
     int fullsize = 0;
 
-    if(type == MMAP) {
+    if(config_mmap) {
         allocation a = map_pages(size, 0);
         result = a.ptr;
         fullsize = a.fullsize;
 
-        int oldsize = allocations[lookup(ptr)].fullsize - getpagesize();
-        int newsize = fullsize - getpagesize();
-        int minsize = oldsize < newsize ? oldsize : newsize;
-        memcpy(result, ptr, minsize);
-        munmap(ptr, allocations[lookup(ptr)].fullsize);
+        if(ptr) {
+            int oldsize = allocations[lookup(ptr)].fullsize - getpagesize();
+            int newsize = fullsize - getpagesize();
+            int minsize = oldsize < newsize ? oldsize : newsize;
+            memcpy(result, ptr, minsize);
+            safe_munmap(ptr, allocations[lookup(ptr)].fullsize);
+        }
     } else {
         result = real_realloc(ptr, size);
     }
@@ -419,7 +426,7 @@ void* realloc(void *ptr, size_t size)
         info("realloc_free(%p) [%lu/%lu]", ptr, total_size, total_allocs);
     }
 
-    save_allocation(result, size, fullsize, type);
+    save_allocation(result, size, fullsize, config_mmap ? MMAP : NATIVE);
 
     info("realloc_malloc(%p, %zu) = %p [%lu/%lu]", ptr, size, result, total_size, total_allocs);
 
