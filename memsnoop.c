@@ -64,22 +64,26 @@ static int initialized = 0;
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
-void lock() {
+void lock()
+{
     pthread_mutex_lock(&mutex);
 }
 
-void unlock() {
+void unlock()
+{
     pthread_mutex_unlock(&mutex);
 }
 
-void* early_malloc(size_t size) {
+void* early_malloc(size_t size)
+{
     if (tmppos + size >= sizeof(tmpbuf)) exit(1);
     void *retptr = tmpbuf + tmppos;
     tmppos += size;
     return retptr;
 }
 
-void* early_calloc(size_t nmemb, size_t size) {
+void* early_calloc(size_t nmemb, size_t size)
+{
     void *ptr = early_malloc(nmemb * size);
     unsigned int i = 0;
     for (; i < nmemb * size; ++i)
@@ -87,7 +91,8 @@ void* early_calloc(size_t nmemb, size_t size) {
     return ptr;
 }
 
-void early_free(void *ptr) {
+void early_free(void *ptr)
+{
     (void)ptr;
 }
 
@@ -165,8 +170,7 @@ int lookup(void* ptr)
 {
     int i = hash(ptr);
 
-    for(int j=0; j<MAX_ALLOCS; j++)
-    {
+    for(int j=0; j<MAX_ALLOCS; j++) {
         if(allocations[i].ptr == ptr) return i;
         if(!allocations[i].ptr) return -1;
 
@@ -181,8 +185,7 @@ int slot(void* ptr)
 {
     int i = hash(ptr);
 
-    for(int j=0; j<MAX_ALLOCS; j++)
-    {
+    for(int j=0; j<MAX_ALLOCS; j++) {
         if(!allocations[i].ptr) return i;
 
         i++;
@@ -192,7 +195,8 @@ int slot(void* ptr)
     return -1;
 }
 
-void save_allocation(void* ptr, size_t size, size_t fullsize, type type) {
+void save_allocation(void* ptr, size_t size, size_t fullsize, type type)
+{
     if(!config_track) return;
 
     if(!ptr) {
@@ -202,8 +206,7 @@ void save_allocation(void* ptr, size_t size, size_t fullsize, type type) {
 
     int i = slot(ptr);
 
-    if(i == -1)
-    {
+    if(i == -1) {
         error("too many allocs, increase MAX_ALLOCS");
         return;
     }
@@ -217,25 +220,23 @@ void save_allocation(void* ptr, size_t size, size_t fullsize, type type) {
     total_allocs++;
 }
 
-void clear_allocation(void* ptr) {
+void clear_allocation(void* ptr)
+{
     if(!config_track) return;
     int i = lookup(ptr);
 
-    if(i == -1)
-    {
+    if(i == -1) {
         error("bad free %p", ptr);
         return;
     }
 
     int j = i;
-    for(;;)
-    {
+    for(;;) {
         j++;
         j %= MAX_ALLOCS;
         if(!allocations[j].ptr) break;
         int k = hash(allocations[j].ptr);
-        if((j > i && (k <= i || k > j)) || (j < i && (k <= i && k > j)))
-        {
+        if((j > i && (k <= i || k > j)) || (j < i && (k <= i && k > j))) {
             allocations[i] = allocations[j];
             i = j;
         }
@@ -247,14 +248,15 @@ void clear_allocation(void* ptr) {
     allocations[i].ptr = NULL;
 }
 
-void clear_allocations() {
-    for(int i=0; i<MAX_ALLOCS; i++)
-    {
+void clear_allocations()
+{
+    for(int i=0; i<MAX_ALLOCS; i++) {
         allocations[i].ptr = NULL;
     }
 }
 
-void initialize() {
+void initialize()
+{
     initialized = 1;
 
     if(getenv("MEMSNOOP_NO_PRINT")) config_print = 0;
@@ -283,8 +285,7 @@ void initialize() {
     temp_posix_memalign = dlsym(RTLD_NEXT, "posix_memalign");
 
     if (!temp_malloc || !temp_calloc || !temp_realloc || !temp_memalign ||
-        !temp_valloc || !temp_posix_memalign || !temp_free)
-    {
+        !temp_valloc || !temp_posix_memalign || !temp_free) {
         fatal("Error in `dlsym`: %s", dlerror());
     }
 
@@ -346,7 +347,8 @@ allocation map_pages(size_t size, size_t alignment)
     return result;
 }
 
-void* malloc(size_t size) {
+void* malloc(size_t size)
+{
     if(!initialized) initialize();
 
     lock();
@@ -369,7 +371,8 @@ void* malloc(size_t size) {
     return result;
 }
 
-void free(void *ptr) {
+void free(void *ptr)
+{
     if(!initialized) initialize();
 
     if(!ptr) return;
@@ -392,7 +395,8 @@ void free(void *ptr) {
     unlock();
 }
 
-void* calloc(size_t n, size_t size) {
+void* calloc(size_t n, size_t size)
+{
     if(!initialized) initialize();
 
     lock();
@@ -415,7 +419,8 @@ void* calloc(size_t n, size_t size) {
     return result;
 }
 
-void* realloc(void *ptr, size_t size) {
+void* realloc(void *ptr, size_t size)
+{
     if(!initialized) initialize();
 
     lock();
@@ -425,8 +430,7 @@ void* realloc(void *ptr, size_t size) {
     type type = location == -1 ? NATIVE : allocations[location].type;
     int fullsize = 0;
 
-    if(type == MMAP)
-    {
+    if(type == MMAP) {
         allocation a = map_pages(size, 0);
         result = a.ptr;
         fullsize = a.fullsize;
@@ -436,9 +440,7 @@ void* realloc(void *ptr, size_t size) {
         int minsize = oldsize < newsize ? oldsize : newsize;
         memcpy(result, ptr, minsize);
         munmap(ptr, allocations[lookup(ptr)].fullsize);
-    }
-    else
-    {
+    } else {
         result = real_realloc(ptr, size);
     }
 
@@ -457,7 +459,8 @@ void* realloc(void *ptr, size_t size) {
     return result;
 }
 
-void* valloc(size_t size) {
+void* valloc(size_t size)
+{
     if(!initialized) initialize();
 
     lock();
@@ -480,7 +483,8 @@ void* valloc(size_t size) {
     return result;
 }
 
-void* memalign(size_t alignment, size_t size) {
+void* memalign(size_t alignment, size_t size)
+{
     if(!initialized) initialize();
 
     lock();
@@ -503,7 +507,8 @@ void* memalign(size_t alignment, size_t size) {
     return result;
 }
 
-int posix_memalign(void** memptr, size_t alignment, size_t size) {
+int posix_memalign(void** memptr, size_t alignment, size_t size)
+{
     if(!initialized) initialize();
 
     lock();
