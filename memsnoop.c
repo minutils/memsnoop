@@ -181,15 +181,13 @@ void save_allocation(void* ptr, size_t size, size_t fullsize, type type)
     if(!config_track) return;
 
     if(!ptr) {
-        error("asked to save a null pointer!");
-        return;
+        fatal("asked to save a null pointer!");
     }
 
     int i = slot(ptr);
 
     if(i == -1) {
-        error("too many allocs, increase MAX_ALLOCS");
-        return;
+        fatal("too many allocs, increase MAX_ALLOCS");
     }
 
     allocations[i].ptr = ptr;
