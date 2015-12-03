@@ -56,6 +56,7 @@ static unsigned long total_allocs = 0;
 static int config_print = 1;
 static int config_abort = 1;
 static int config_track = 1;
+static int config_check = 0;
 static int config_mmap = 0;
 
 static int pagesize = 0;
@@ -237,9 +238,14 @@ void initialize()
     if(getenv("MEMSNOOP_NO_TRACK")) config_track = 0;
     if(getenv("MEMSNOOP_NO_ABORT")) config_abort = 0;
     if(getenv("MEMSNOOP_MMAP"))     config_mmap  = 1;
+    if(getenv("MEMSNOOP_CHECK"))    config_check = 1;
 
     if(!config_track && config_mmap) {
         fatal("MEMSNOOP_MMAP and MEMSNOOP_NO_TRACK cannot both be set");
+    }
+
+    if(config_check && !config_mmap) {
+        fatal("MEMSNOOP_CHECK requires MEMSNOOP_MMAP");
     }
 
     real_malloc         = dlsym(RTLD_NEXT, "malloc");
@@ -271,6 +277,24 @@ size_t fullsize(size_t size)
     if(pages*pagesize < size) pages++;
     pages++;
     return pages*pagesize;
+}
+
+void unmap_allocation(int a)
+{
+    uint8_t* ptr = allocations[a].ptr;
+    int size = allocations[a].size;
+
+    if(config_check) {
+        for(int i=size; i<fullsize(size) - pagesize; i++) {
+            uint8_t* p = ptr;
+            p += i;
+            if(*p != 0xA1) {
+                error("overrun detected in %p at position %d (size was %d)", ptr, i, size);
+            }
+        }
+    }
+
+    safe_munmap(ptr, fullsize(size));
 }
 
 allocation map_pages(size_t size, size_t alignment)
@@ -311,6 +335,10 @@ allocation map_pages(size_t size, size_t alignment)
     }
 
     mprotect(ptr+(pagesize*(pages-1)), pagesize, PROT_NONE);
+
+    if(config_check) {
+        memset(ptr+size, 0xA1, fullsize(size) - pagesize - size);
+    }
 
     allocation result;
     result.ptr = ptr;
@@ -356,7 +384,7 @@ void free(void *ptr)
     }
 
     if(config_mmap || initialized == INITIALIZING)
-        safe_munmap(ptr, fullsize(allocations[lookup(ptr)].size));
+        unmap_allocation(lookup(ptr));
     else
         real_free(ptr);
 
@@ -408,11 +436,11 @@ void* realloc(void *ptr, size_t size)
         result = a.ptr;
 
         if(ptr) {
-            int oldsize = fullsize(allocations[lookup(ptr)].size) - pagesize;
-            int newsize = fullsize(size) - pagesize;
+            int oldsize = allocations[lookup(ptr)].size;
+            int newsize = size;
             int minsize = oldsize < newsize ? oldsize : newsize;
             memcpy(result, ptr, minsize);
-            safe_munmap(ptr, fullsize(allocations[lookup(ptr)].size));
+            unmap_allocation(lookup(ptr));
         }
     } else {
         result = real_realloc(ptr, size);
