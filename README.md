@@ -39,5 +39,5 @@ export  | result
 `MEMSNOOP_NO_TRACK`  | Don't track allocations.  Tracking allocations is expensive but will catch errors like double free or calling realloc with a pointer that was not previously allocated.
 `MEMSNOOP_NO_ABORT`  | Don't abort program when memory errors are detected.  Full speed ahead!
 `MEMSNOOP_MMAP`      | Use `mmap` instead of native memory allocator.  All allocations will be followed by an extra page that is `mprotect(PROT_NONE)`, so buffer overruns (at least to the next page boundary) and underruns will immediately segfault.  Cannot be used with `MEMSNOOP_NO_TRACK`.
-
+`MEMSNOOP_CHECK`     | Write the lucky byte `0xA1` to unallocated sections of memory pages.  Check for this byte when memory is freed to verify no buffers have been overrun.  Requires `MEMSNOOP_MMAP`.
 Based on https://github.com/jtolds/malloc_instrumentation
