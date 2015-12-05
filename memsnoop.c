@@ -17,6 +17,17 @@
 #include <errno.h>
 #include <sys/mman.h>
 
+//=============================================================================
+// increase this to track more allocations
+//=============================================================================
+
+#define MAX_ALLOCS 1024*1024
+
+
+//=============================================================================
+// typedefs
+//=============================================================================
+
 typedef void* (*malloc_t)(size_t size);
 typedef void* (*calloc_t)(size_t nmemb, size_t size);
 typedef void* (*realloc_t)(void *ptr, size_t size);
@@ -31,12 +42,17 @@ typedef enum {
     INITIALIZED
 } status;
 
-static status initialized = NOT_INITIALIZED;
-
 typedef struct allocation {
     void*  ptr;
     size_t size;
 } allocation;
+
+
+//=============================================================================
+// static variables
+//=============================================================================
+
+static status initialized = NOT_INITIALIZED;
 
 static malloc_t         real_malloc;
 static calloc_t         real_calloc;
@@ -45,8 +61,6 @@ static memalign_t       real_memalign;
 static valloc_t         real_valloc;
 static posix_memalign_t real_posix_memalign;
 static free_t           real_free;
-
-#define MAX_ALLOCS 1024*1024
 
 static allocation allocations[MAX_ALLOCS];
 
@@ -61,7 +75,54 @@ static int config_mmap = 0;
 
 static int pagesize = 0;
 
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+
+//=============================================================================
+// static prototypes
+//=============================================================================
+
+static void lock();
+static void unlock();
+
+static void info(char* format, ...)  __attribute__((format(printf, 1, 2)));
+static void warn(char* format, ...)  __attribute__((format(printf, 1, 2))) __attribute__ ((unused));
+static void error(char* format, ...) __attribute__((format(printf, 1, 2)));
+static void fatal(char* format, ...) __attribute__((format(printf, 1, 2)));
+static void vprint(char* format, va_list args);
+
+static unsigned hash(void* ptr);
+static int lookup(void* ptr);
+static int slot(void* ptr);
+
+static void save_allocation(void* ptr, size_t size);
+static void clear_allocation(void* ptr);
+static void clear_allocations();
+
+static void initialize();
+
+static size_t fullsize(size_t size);
+static allocation map_pages(size_t size, size_t alignment);
+static void safe_munmap(void* addr, size_t len);
+static void unmap_allocation(int a);
+
+
+//=============================================================================
+// prototypes of functions to be wrapped
+//=============================================================================
+
+void* malloc(size_t size);
+void free(void *ptr);
+void* calloc(size_t n, size_t size);
+void* realloc(void *ptr, size_t size);
+void* valloc(size_t size);
+void* memalign(size_t alignment, size_t size);
+int posix_memalign(void** memptr, size_t alignment, size_t size);
+
+
+//=============================================================================
+// locking system
+//=============================================================================
 
 void lock()
 {
@@ -73,10 +134,10 @@ void unlock()
     pthread_mutex_unlock(&mutex);
 }
 
-void info(char* format, ...)  __attribute__((format(printf, 1, 2)));
-void warn(char* format, ...)  __attribute__((format(printf, 1, 2)));
-void error(char* format, ...) __attribute__((format(printf, 1, 2)));
-void fatal(char* format, ...) __attribute__((format(printf, 1, 2)));
+
+//=============================================================================
+// logging system
+//=============================================================================
 
 void vprint(char* format, va_list args)
 {
@@ -115,6 +176,11 @@ void fatal(char* format, ...)
 }
 
 #undef CALL_VPRINT
+
+
+//=============================================================================
+// hashtable
+//=============================================================================
 
 unsigned hash(void* ptr)
 {
@@ -172,6 +238,11 @@ int slot(void* ptr)
     return -1;
 }
 
+
+//=============================================================================
+// tracking
+//=============================================================================
+
 void save_allocation(void* ptr, size_t size)
 {
     if(!config_track) return;
@@ -228,11 +299,18 @@ void clear_allocations()
     }
 }
 
+
+//=============================================================================
+// initialization
+//=============================================================================
+
 void initialize()
 {
     initialized = INITIALIZING;
 
     pagesize = getpagesize();
+
+    clear_allocations();
 
     if(getenv("MEMSNOOP_NO_PRINT")) config_print = 0;
     if(getenv("MEMSNOOP_NO_TRACK")) config_track = 0;
@@ -264,12 +342,10 @@ void initialize()
     initialized = INITIALIZED;
 }
 
-void safe_munmap(void* addr, size_t len)
-{
-    if(munmap(addr, len) == -1) {
-        fatal("munmap(%p, %zu) failed: %s", addr, len, strerror(errno));
-    }
-}
+
+//=============================================================================
+// mmap
+//=============================================================================
 
 size_t fullsize(size_t size)
 {
@@ -277,6 +353,13 @@ size_t fullsize(size_t size)
     if(pages*pagesize < size) pages++;
     pages++;
     return pages*pagesize;
+}
+
+void safe_munmap(void* addr, size_t len)
+{
+    if(munmap(addr, len) == -1) {
+        fatal("munmap(%p, %zu) failed: %s", addr, len, strerror(errno));
+    }
 }
 
 void unmap_allocation(int a)
@@ -346,6 +429,11 @@ allocation map_pages(size_t size, size_t alignment)
 
     return result;
 }
+
+
+//=============================================================================
+// wrappers
+//=============================================================================
 
 void* malloc(size_t size)
 {
