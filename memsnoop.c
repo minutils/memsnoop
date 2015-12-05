@@ -64,6 +64,8 @@ static free_t           real_free;
 
 static allocation allocations[MAX_ALLOCS];
 
+static uint8_t* a1_page;
+
 static unsigned long total_size = 0;
 static unsigned long total_allocs = 0;
 
@@ -326,6 +328,12 @@ void initialize()
         fatal("MEMSNOOP_CHECK requires MEMSNOOP_MMAP");
     }
 
+    if(config_check) {
+        a1_page = mmap(0, pagesize, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+        if(!a1_page) fatal("mmap failed: %s", strerror(errno));
+        memset(a1_page, 0xA1, pagesize);
+    }
+
     real_malloc         = dlsym(RTLD_NEXT, "malloc");
     real_calloc         = dlsym(RTLD_NEXT, "calloc");
     real_realloc        = dlsym(RTLD_NEXT, "realloc");
@@ -368,11 +376,13 @@ void unmap_allocation(int a)
     int size = allocations[a].size;
 
     if(config_check) {
-        for(int i=size; i<fullsize(size) - pagesize; i++) {
-            uint8_t* p = ptr;
-            p += i;
-            if(*p != 0xA1) {
-                error("overrun detected in %p at position %d (size was %d)", ptr, i, size);
+        if(memcmp(ptr+size, a1_page, fullsize(size) - size - pagesize) != 0) {
+            for(int i=size; i<fullsize(size) - pagesize; i++) {
+                uint8_t* p = ptr;
+                p += i;
+                if(*p != 0xA1) {
+                    error("overrun detected in %p at position %d (size was %d)", ptr, i, size);
+                }
             }
         }
     }
